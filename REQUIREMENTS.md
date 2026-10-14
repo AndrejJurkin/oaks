@@ -12,7 +12,7 @@ Scope: **Step 1** and **Step 2**. Steps 3–4 (`linkManagers`, `countReports`) a
   - `export const sourceA: UserProfile[]`
   - `export const sourceB: UserProfile[]`
   - `export function mergeUserProfiles(a: UserProfile[], b: UserProfile[]): UserProfile[]`
-- Test file imports these and runs `testMerge()` in an IIFE when loaded.
+- The provided harness (`src/code-challenge.harness.ts`, run with `pnpm challenge`) imports these and runs `testMerge()` in an IIFE when loaded. The vitest suite is `src/code-challenge.test.ts` (`pnpm test`).
 
 ---
 
@@ -103,9 +103,10 @@ The written explanation should cover:
 
 ---
 
-## Open questions / decisions to make
-1. `role`: `string` or a string-literal union?
-2. Does `null` / `''` count as "undefined" for merge precedence?
-3. Skip or keep records with no email? Log a warning when skipping?
-4. Normalize only `email`, or `managerEmail` too? (Recommended: both.)
-5. Runtime/tooling: how will the tests run (`tsx`, `ts-node`, `tsc` + node)? Is there a required `tsconfig` strictness?
+## Decisions (previously open questions)
+1. `role` is a string-literal union of the known values (`developer`, `manager`, `user`) plus any string. That keeps autocomplete while still accepting unknown roles. The tradeoff is that typos like `'manger'` still compile.
+2. `undefined`, `null` and blank/whitespace-only strings all count as "not defined" and never override a value. `0` and `false` count as defined. As a result, b can't deliberately clear a field.
+3. Records without a usable email are skipped silently. A missing (`null`/`undefined`) input array is treated as empty.
+4. `email` and `managerEmail` are both normalized with trim + lowercase. There's no Unicode normalization. Other fields are kept as given.
+5. Tooling: tests run with vitest, and the harness runs with tsx. `tsconfig` stays `strict`, but module resolution changed from `NodeNext` to `Bundler`, because the provided harness imports `./code-challenge` without an extension. As a result, `pnpm build` output isn't runnable under plain Node.
+6. Copies are shallow: each output user is a new object, but nested values in extra fields are shared with the input. An own `__proto__` key in the input is ignored.

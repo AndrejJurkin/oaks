@@ -114,19 +114,26 @@ function isDefined(value: unknown): boolean {
 
 /*
  * Records are applied in order (all of a, then all of b), so later records win conflicts,
- * including duplicates within one source. Records without a usable email can't be
- * deduplicated, so they are skipped. Output order is the order each email first appears.
+ * including duplicates within one source. Output order is the order each email first appears.
+ * - Records without a usable email can't be deduplicated, so they are skipped silently.
+ *   A missing (null/undefined) input array is treated as empty.
+ * - Emails are matched after trim + lowercase only. There is no Unicode normalization,
+ *   so e.g. NFC and NFD forms of the same address count as different users.
+ * - Copies are shallow: top-level fields are new objects, but nested values
+ *   (from extra fields) are shared with the input.
  */
 export function mergeUserProfiles(a: UserProfile[], b: UserProfile[]): UserProfile[] {
   const byEmail = new Map<string, UserProfile>();
 
-  for (const record of [...a, ...b]) {
+  for (const record of [...(a ?? []), ...(b ?? [])]) {
     const email = normalizeEmail(record?.email);
     if (!email) continue;
 
-    const merged: Record<string, unknown> = { ...byEmail.get(email) };
-    const normalized = { ...record, email, managerEmail: normalizeEmail(record.managerEmail) };
-    for (const [key, value] of Object.entries(normalized)) {
+    const merged: Record<string, unknown> = { ...byEmail.get(email), email };
+    for (const [key, raw] of Object.entries(record)) {
+      // `email` is already set. Assigning `__proto__` would replace the prototype instead of adding a field.
+      if (key === 'email' || key === '__proto__') continue;
+      const value = key === 'managerEmail' ? normalizeEmail(raw) : raw;
       if (isDefined(value)) merged[key] = value;
     }
 

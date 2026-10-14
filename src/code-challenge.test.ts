@@ -21,6 +21,7 @@ describe('mergeUserProfiles — sample data', () => {
   });
 
   it('has no duplicate emails (case-insensitive)', () => {
+    expect(merged).toHaveLength(8);
     const unique = new Set(merged.map(u => u.email.toLowerCase()));
     expect(unique.size).toBe(merged.length);
   });
@@ -81,6 +82,22 @@ describe('mergeUserProfiles — deduplication & email normalization', () => {
       { email: 'a@example.com', name: 'Second', role: 'user' },
     ]);
   });
+
+  it('merges three or more records for the same email across both sources', () => {
+    const merged = mergeUserProfiles(
+      [
+        { email: 'a@example.com', name: 'A1', role: 'user' },
+        { email: 'A@EXAMPLE.COM', managerEmail: 'm@example.com' },
+      ],
+      [
+        { email: 'a@example.com', name: 'B1' },
+        { email: ' a@example.com ', role: 'manager' },
+      ]
+    );
+    expect(merged).toEqual([
+      { email: 'a@example.com', name: 'B1', role: 'manager', managerEmail: 'm@example.com' },
+    ]);
+  });
 });
 
 describe('mergeUserProfiles — field precedence', () => {
@@ -119,9 +136,25 @@ describe('mergeUserProfiles — field precedence', () => {
     expect(user).toEqual({ email: 'a@example.com', name: 'Ann', role: 'user' });
   });
 
-  it('omits fields that are not defined in any source', () => {
+  it('does not let a blank managerEmail from b override the one from a', () => {
     const [user] = mergeUserProfiles(
-      [{ email: 'a@example.com', role: undefined }],
+      [{ email: 'a@example.com', managerEmail: 'm@example.com' }],
+      [{ email: 'a@example.com', managerEmail: '  ' }]
+    );
+    expect(user.managerEmail).toBe('m@example.com');
+  });
+
+  it('treats 0 and false as defined values', () => {
+    const fromA = { email: 'a@example.com', active: true, score: 5, verified: false };
+    const fromB = { email: 'a@example.com', active: false, score: 0 };
+    const [user] = mergeUserProfiles([fromA], [fromB]);
+    expect(user).toEqual({ email: 'a@example.com', active: false, score: 0, verified: false });
+  });
+
+  it('omits fields that are not defined in any source', () => {
+    const fromA = { email: 'a@example.com', role: undefined, name: null } as unknown as UserProfile;
+    const [user] = mergeUserProfiles(
+      [fromA],
       [{ email: 'a@example.com', managerEmail: '' }]
     );
     expect(user).toEqual({ email: 'a@example.com' });
@@ -153,13 +186,31 @@ describe('mergeUserProfiles — edge cases', () => {
     const merged = mergeUserProfiles(invalid, [{ email: 'ok@example.com', name: 'Ok' }]);
     expect(merged).toEqual([{ email: 'ok@example.com', name: 'Ok' }]);
   });
+
+  it('treats a missing input array as empty', () => {
+    const missing = null as unknown as UserProfile[];
+    expect(mergeUserProfiles(missing, [{ email: 'b@example.com' }])).toEqual([
+      { email: 'b@example.com' },
+    ]);
+    expect(mergeUserProfiles([{ email: 'a@example.com' }], missing)).toEqual([
+      { email: 'a@example.com' },
+    ]);
+  });
+
+  it('ignores a __proto__ key instead of replacing the prototype', () => {
+    const fromB = JSON.parse('{"email":"a@example.com","__proto__":{"role":"admin"}}');
+    const [user] = mergeUserProfiles([{ email: 'a@example.com', name: 'Ann' }], [fromB]);
+    expect(Object.getPrototypeOf(user)).toBe(Object.prototype);
+    expect(user.role).toBeUndefined();
+    expect(user).toEqual({ email: 'a@example.com', name: 'Ann' });
+  });
 });
 
 describe('mergeUserProfiles — immutability', () => {
   it('does not mutate the input arrays or their records', () => {
     const a = structuredClone(sourceA);
     const b = structuredClone(sourceB);
-    mergeUserProfiles(a, b);
+    expect(mergeUserProfiles(a, b).length).toBeGreaterThan(0);
     expect(a).toEqual(sourceA);
     expect(b).toEqual(sourceB);
   });
@@ -167,12 +218,21 @@ describe('mergeUserProfiles — immutability', () => {
   it('returns a new array of new objects', () => {
     const merged = mergeUserProfiles(sourceA, sourceB);
     const inputs = new Set<unknown>([...sourceA, ...sourceB]);
+    expect(merged.length).toBeGreaterThan(0);
     expect(merged).not.toBe(sourceA);
     expect(merged).not.toBe(sourceB);
     for (const user of merged) expect(inputs.has(user)).toBe(false);
   });
 
+  it('returns copies that are equal to, but not the same as, single-source records', () => {
+    const [alex] = mergeUserProfiles([sourceA[0]], []);
+    expect(alex).toEqual(sourceA[0]);
+    expect(alex).not.toBe(sourceA[0]);
+  });
+
   it('is deterministic', () => {
-    expect(mergeUserProfiles(sourceA, sourceB)).toEqual(mergeUserProfiles(sourceA, sourceB));
+    const first = mergeUserProfiles(sourceA, sourceB);
+    expect(first.length).toBeGreaterThan(0);
+    expect(mergeUserProfiles(sourceA, sourceB)).toEqual(first);
   });
 });
