@@ -16,11 +16,16 @@ Explain any assumptions or choices you make (e.g., type of id, handling of missi
  * - There is no separate id. `email` is the identity key, so it is required and typed `string`.
  *   It's compared case-insensitively and normalized (trimmed, lowercased) when merging.
  * - Every other field is optional (`?:`) because sources return partial records.
- *   Missing means absent/undefined rather than `null`. Incoming `null` is still tolerated at runtime.
+ *   Missing means absent/undefined rather than `null`: that matches how the sample data omits
+ *   fields, and works with spreads and `!== undefined` checks without every reader also
+ *   handling `null`. Incoming `null` is still tolerated at runtime.
  * - `role` lists the known values for autocomplete, but still accepts any string,
  *   because external sources may send roles we don't know about yet.
- * - `managerEmail` is a plain email reference. It isn't validated here, so it may point
- *   to a user that doesn't exist or to the user itself. Resolving it is a later step.
+ *   The tradeoff is that typos like 'manger' still compile.
+ * - `managerEmail` is a plain email reference, not a nested object. It isn't validated here,
+ *   so it may point to a user that doesn't exist or to the user itself.
+ * - Resolving it is a later step, which will add an optional `manager?: UserProfile` field
+ *   (or an extended type) holding the linked manager.
  */
 export type UserRole = 'developer' | 'manager' | 'user' | (string & {});
 
@@ -119,7 +124,7 @@ function isDefined(value: unknown): boolean {
  *   A missing (null/undefined) input array is treated as empty.
  * - Emails are matched after trim + lowercase only. There is no Unicode normalization,
  *   so e.g. NFC and NFD forms of the same address count as different users.
- * - Copies are shallow: top-level fields are new objects, but nested values
+ * - Copies are shallow: each output user is a new object, but nested values
  *   (from extra fields) are shared with the input.
  */
 export function mergeUserProfiles(a: UserProfile[], b: UserProfile[]): UserProfile[] {
