@@ -1,8 +1,48 @@
-import { describe, expect, it } from 'vitest';
+import { describe, expect, expectTypeOf, it, vi } from 'vitest';
 import { mergeUserProfiles, sourceA, sourceB } from './code-challenge';
-import type { UserProfile } from './code-challenge';
+import type { UserProfile, UserRole } from './code-challenge';
 
 const emailsOf = (users: UserProfile[]) => users.map(u => u.email);
+
+// Type assertions are checked by `pnpm typecheck` (tsc), not by vitest at runtime.
+describe('UserProfile — types', () => {
+  it('requires email as a plain string', () => {
+    expectTypeOf<UserProfile['email']>().toEqualTypeOf<string>();
+    expectTypeOf<{ name: string }>().not.toExtend<UserProfile>();
+  });
+
+  it('makes every other field optional', () => {
+    expectTypeOf<{ email: string }>().toExtend<UserProfile>();
+    expectTypeOf<UserProfile['name']>().toEqualTypeOf<string | undefined>();
+    expectTypeOf<UserProfile['managerEmail']>().toEqualTypeOf<string | undefined>();
+    expectTypeOf<UserProfile['role']>().toEqualTypeOf<UserRole | undefined>();
+  });
+
+  it('accepts known and unknown roles', () => {
+    expectTypeOf<'developer'>().toExtend<UserRole>();
+    expectTypeOf<'manager'>().toExtend<UserRole>();
+    expectTypeOf<'user'>().toExtend<UserRole>();
+    expectTypeOf<'admin'>().toExtend<UserRole>();
+  });
+
+  it('returns UserProfile[] from mergeUserProfiles', () => {
+    expectTypeOf(mergeUserProfiles).parameters.toEqualTypeOf<[UserProfile[], UserProfile[]]>();
+    expectTypeOf(mergeUserProfiles).returns.toEqualTypeOf<UserProfile[]>();
+  });
+});
+
+describe('sample data', () => {
+  it('has the records the challenge describes', () => {
+    expect(sourceA).toHaveLength(5);
+    expect(sourceB).toHaveLength(4);
+  });
+
+  it('includes a casing duplicate, a dangling manager and a self-reference', () => {
+    expect(sourceB.some(u => u.email === 'MARY@example.com')).toBe(true);
+    expect(sourceA.find(u => u.name === 'Ivan')?.managerEmail).toBe('nonexistent@example.com');
+    expect(sourceA.find(u => u.name === 'SelfRef')?.managerEmail).toBe('self@example.com');
+  });
+});
 
 describe('mergeUserProfiles — sample data', () => {
   const merged = mergeUserProfiles(sourceA, sourceB);
@@ -83,6 +123,17 @@ describe('mergeUserProfiles — deduplication & email normalization', () => {
     ]);
   });
 
+  it('does not validate email format', () => {
+    const merged = mergeUserProfiles([{ email: 'not-an-email' }, { email: 'a b@x.com' }], []);
+    expect(emailsOf(merged)).toEqual(['not-an-email', 'a b@x.com']);
+  });
+
+  it('does not apply Unicode normalization (NFC and NFD forms stay separate)', () => {
+    const nfc = 'jos\u00e9@example.com';
+    const nfd = 'jose\u0301@example.com';
+    expect(mergeUserProfiles([{ email: nfc }], [{ email: nfd }])).toHaveLength(2);
+  });
+
   it('merges three or more records for the same email across both sources', () => {
     const merged = mergeUserProfiles(
       [
@@ -107,6 +158,25 @@ describe('mergeUserProfiles — field precedence', () => {
       [{ email: 'a@example.com', name: 'From B', role: 'manager' }]
     );
     expect(user).toEqual({ email: 'a@example.com', name: 'From B', role: 'manager' });
+  });
+
+  it('takes a conflicting managerEmail from b, normalized', () => {
+    const [user] = mergeUserProfiles(
+      [{ email: 'a@example.com', managerEmail: 'old@example.com' }],
+      [{ email: 'a@example.com', managerEmail: ' New@Example.com' }]
+    );
+    expect(user.managerEmail).toBe('new@example.com');
+  });
+
+  it('lets b win even when a appears later in the output order', () => {
+    const merged = mergeUserProfiles(
+      [{ email: 'x@example.com' }, { email: 'a@example.com', name: 'From A' }],
+      [{ email: 'a@example.com', name: 'From B' }]
+    );
+    expect(merged).toEqual([
+      { email: 'x@example.com' },
+      { email: 'a@example.com', name: 'From B' },
+    ]);
   });
 
   it('keeps a defined value from a when b lacks it (absent or explicitly undefined)', () => {
@@ -144,6 +214,26 @@ describe('mergeUserProfiles — field precedence', () => {
     expect(user.managerEmail).toBe('m@example.com');
   });
 
+  it('drops a non-string managerEmail without overriding a valid one', () => {
+    const fromB = { email: 'a@example.com', managerEmail: 42 } as unknown as UserProfile;
+    const [user] = mergeUserProfiles([{ email: 'a@example.com', managerEmail: 'm@example.com' }], [fromB]);
+    expect(user.managerEmail).toBe('m@example.com');
+
+    const onlyBad = { email: 'b@example.com', managerEmail: { email: 'm@example.com' } };
+    const [other] = mergeUserProfiles([onlyBad as unknown as UserProfile], []);
+    expect(other).toEqual({ email: 'b@example.com' });
+  });
+
+  it('keeps other string fields as given (no trimming or case changes)', () => {
+    const [user] = mergeUserProfiles([{ email: 'a@example.com', name: '  Ann  ', role: 'Manager' }], []);
+    expect(user).toEqual({ email: 'a@example.com', name: '  Ann  ', role: 'Manager' });
+  });
+
+  it('passes unknown roles through', () => {
+    const [user] = mergeUserProfiles([], [{ email: 'a@example.com', role: 'admin' }]);
+    expect(user.role).toBe('admin');
+  });
+
   it('treats 0 and false as defined values', () => {
     const fromA = { email: 'a@example.com', active: true, score: 5, verified: false };
     const fromB = { email: 'a@example.com', active: false, score: 0 };
@@ -159,6 +249,13 @@ describe('mergeUserProfiles — field precedence', () => {
     );
     expect(user).toEqual({ email: 'a@example.com' });
     expect(Object.keys(user)).toEqual(['email']);
+  });
+
+  it('ignores inherited properties', () => {
+    const record = Object.assign(Object.create({ role: 'manager' }), { email: 'a@example.com' });
+    const [user] = mergeUserProfiles([record], []);
+    expect(user).toEqual({ email: 'a@example.com' });
+    expect(user.role).toBeUndefined();
   });
 
   it('merges fields beyond the known ones generically', () => {
@@ -185,6 +282,13 @@ describe('mergeUserProfiles — edge cases', () => {
     ] as unknown as UserProfile[];
     const merged = mergeUserProfiles(invalid, [{ email: 'ok@example.com', name: 'Ok' }]);
     expect(merged).toEqual([{ email: 'ok@example.com', name: 'Ok' }]);
+  });
+
+  it('keeps first-appearance order when invalid records are interleaved', () => {
+    const a = [{ email: 'a@example.com' }, { name: 'No email' }, { email: 'b@example.com' }];
+    const b = [{ email: '' }, { email: 'c@example.com' }, { email: 'A@example.com', name: 'Ann' }];
+    const merged = mergeUserProfiles(a as UserProfile[], b);
+    expect(emailsOf(merged)).toEqual(['a@example.com', 'b@example.com', 'c@example.com']);
   });
 
   it('treats a missing input array as empty', () => {
@@ -230,9 +334,41 @@ describe('mergeUserProfiles — immutability', () => {
     expect(alex).not.toBe(sourceA[0]);
   });
 
+  it('returns results that are independent of the inputs', () => {
+    const a = [{ email: 'a@example.com', name: 'Ann' }];
+    const [user] = mergeUserProfiles(a, []);
+    user.name = 'Changed';
+    expect(a[0].name).toBe('Ann');
+    expect(mergeUserProfiles(a, [])[0].name).toBe('Ann');
+  });
+
+  it('copies shallowly: nested values in extra fields are shared with the input', () => {
+    const tags = ['core'];
+    const [user] = mergeUserProfiles([{ email: 'a@example.com', tags } as UserProfile], []);
+    expect((user as UserProfile & { tags: string[] }).tags).toBe(tags);
+  });
+
   it('is deterministic', () => {
     const first = mergeUserProfiles(sourceA, sourceB);
     expect(first.length).toBeGreaterThan(0);
     expect(mergeUserProfiles(sourceA, sourceB)).toEqual(first);
+  });
+});
+
+describe('provided harness', () => {
+  it('passes with no errors or warnings', async () => {
+    const log = vi.spyOn(console, 'log').mockImplementation(() => {});
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const error = vi.spyOn(console, 'error').mockImplementation(() => {});
+    try {
+      await import('./code-challenge.harness');
+      const logged = log.mock.calls.flat().join('\n');
+      expect(logged).toContain('✅ mergeUserProfiles passed (user count check).');
+      expect(logged).toContain('✅ mergeUserProfiles passed (unique email count check).');
+      expect(warn).not.toHaveBeenCalled();
+      expect(error).not.toHaveBeenCalled();
+    } finally {
+      vi.restoreAllMocks();
+    }
   });
 });
